@@ -36,6 +36,7 @@ export async function startServer(): Promise<void> {
       name: z.string().describe('Project name'),
       base_url: z.string().optional().describe('Base URL of the site (e.g. https://myapp.com)'),
       description: z.string().optional().describe('Project description'),
+      concurrency: z.number().int().min(1).max(20).optional().describe('Number of tests to run in parallel (default: 5)'),
     },
     async (args) => {
       const result = await api.createProject(args);

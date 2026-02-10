@@ -46,7 +46,7 @@ export class ApiClient {
     return this.request('GET', '/projects');
   }
 
-  async createProject(data: { name: string; base_url?: string; description?: string }) {
+  async createProject(data: { name: string; base_url?: string; description?: string; concurrency?: number }) {
     return this.request('POST', '/projects', data);
   }
 
@@ -54,7 +54,7 @@ export class ApiClient {
     return this.request('GET', `/projects/${id}`);
   }
 
-  async updateProject(id: string, data: { name?: string; base_url?: string; description?: string }) {
+  async updateProject(id: string, data: { name?: string; base_url?: string; description?: string; concurrency?: number }) {
     return this.request('PUT', `/projects/${id}`, data);
   }
 

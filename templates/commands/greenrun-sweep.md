@@ -30,9 +30,9 @@ Call `sweep` with the project ID and either:
 
 Present the affected tests:
 
-| Test | Pages | Last Status |
-|------|-------|-------------|
-| Test name | Affected page URLs | passed/failed/never run |
+| Test | Pages | Tags | Last Status |
+|------|-------|------|-------------|
+| Test name | Affected page URLs | tag1, tag2 | passed/failed/never run |
 
 ### 6. Offer to run
 

@@ -10,9 +10,14 @@ Call `list_projects` to get all projects. Match the current project by name or b
 
 ### 2. Get tests
 
-Call `list_tests` with the project ID. If the user specified a test name as an argument ("$ARGUMENTS"), filter to only that test. Otherwise, run all active tests.
+Call `list_tests` with the project ID. If the user specified an argument ("$ARGUMENTS"):
+- If it matches a test name, filter to only that test
+- If it matches a tag name (prefixed with `tag:` or matching a known tag), filter to tests with that tag
+- Otherwise, treat it as a test name filter
 
-If there are no active tests, tell the user and stop.
+If no argument is given, run all active tests.
+
+If there are no matching active tests, tell the user and stop.
 
 ### 3. Execute each test
 
@@ -33,8 +38,8 @@ For each test:
 
 After all tests complete, present a summary table:
 
-| Test | Status | Result |
-|------|--------|--------|
-| Test name | passed/failed/error | Brief summary |
+| Test | Tags | Status | Result |
+|------|------|--------|--------|
+| Test name | tag1, tag2 | passed/failed/error | Brief summary |
 
 If any tests failed, highlight what went wrong and suggest next steps.

@@ -1,0 +1,44 @@
+{
+  "name": "greenrun-cli",
+  "version": "0.1.0",
+  "description": "CLI and MCP server for Greenrun - browser test management for Claude Code",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "greenrun": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js"
+  },
+  "keywords": [
+    "greenrun",
+    "mcp",
+    "claude",
+    "testing",
+    "browser-testing",
+    "claude-code"
+  ],
+  "author": "Greenrun",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Add-Item-To/greenrun-cli.git"
+  },
+  "homepage": "https://app.greenrun.dev",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

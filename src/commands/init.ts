@@ -166,6 +166,13 @@ function installCommands(): void {
   }
 }
 
+export function runUpdate(): void {
+  console.log('\nGreenrun - Updating templates\n');
+  installCommands();
+  installClaudeMd();
+  console.log('\nDone! Templates updated to latest version.\n');
+}
+
 export async function runInit(args: string[]): Promise<void> {
   const opts = parseFlags(args);
   const interactive = !opts.token;

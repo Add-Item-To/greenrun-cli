@@ -19,6 +19,7 @@ function printHelp(): void {
 
 Usage:
   greenrun init             Interactive setup wizard
+  greenrun update           Update command templates to latest version
   greenrun serve            Start MCP server
   greenrun --version, -v    Print version
   greenrun --help, -h       Print this help
@@ -48,6 +49,12 @@ async function main(): Promise<void> {
   if (command === 'init') {
     const { runInit } = await import('./commands/init.js');
     await runInit(args.slice(1));
+    return;
+  }
+
+  if (command === 'update') {
+    const { runUpdate } = await import('./commands/init.js');
+    runUpdate();
     return;
   }
 

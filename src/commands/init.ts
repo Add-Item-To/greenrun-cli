@@ -72,10 +72,16 @@ async function validateToken(token: string): Promise<{ valid: boolean; projectCo
 }
 
 function configureMcpLocal(token: string): void {
-  execSync(
-    `claude mcp add --transport stdio -e GREENRUN_API_TOKEN=${token} greenrun -- npx -y greenrun-cli@latest`,
-    { stdio: 'inherit' },
-  );
+  try {
+    execSync(
+      `claude mcp add greenrun --transport stdio -e GREENRUN_API_TOKEN=${token} -- npx -y greenrun-cli@latest`,
+      { stdio: 'inherit' },
+    );
+  } catch {
+    console.error('\nFailed to run "claude mcp add". Make sure Claude Code is installed and in your PATH.');
+    console.error('You can add the MCP server manually by running:\n');
+    console.error(`  claude mcp add greenrun --transport stdio -e GREENRUN_API_TOKEN=${token} -- npx -y greenrun-cli@latest\n`);
+  }
 }
 
 function configureMcpProject(token: string): void {

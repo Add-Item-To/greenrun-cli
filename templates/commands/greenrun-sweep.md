@@ -40,7 +40,7 @@ Ask the user if they want to run the affected tests. If yes, execute them **in p
 
 Use the project's `concurrency` setting (default: 5) to determine batch size. Split affected tests into batches and launch each batch simultaneously using the **Task tool** with `run_in_background: true`.
 
-For each test in a batch, launch a background agent with this prompt:
+For each test in a batch, launch a background agent with `max_turns: 30` and `model: "sonnet"`. Use this prompt:
 
 ```
 You are executing a single Greenrun browser test. You have access to browser automation tools and Greenrun MCP tools.
@@ -50,14 +50,19 @@ You are executing a single Greenrun browser test. You have access to browser aut
 Step 1: Call `get_test` with test_id "{test_id}" to get full instructions.
 Step 2: Call `start_run` with test_id "{test_id}" to begin - save the returned `run_id`.
 Step 3: Execute the test instructions using browser automation:
-   - Create a new browser tab for this test
+   - Call `tabs_context_mcp` then create a new browser tab for this test
    - Follow each instruction step exactly as written
    - The instructions will tell you where to navigate and what to do
-   - Observe results and take screenshots as needed for verification
+   - Only take a screenshot when you need to verify a visual assertion — not for every navigation or click
+   - When reading page content, prefer `find` or `read_page` with `filter: "interactive"` over full DOM reads
+   - NEVER trigger JavaScript alerts, confirms, or prompts — they block the browser extension entirely. Before clicking delete buttons or other destructive actions, use `javascript_tool` to override: `window.alert = () => {}; window.confirm = () => true; window.prompt = () => null;`
+   - If browser tools stop responding (no result or timeout), assume a dialog is blocking — report the error and stop. Do not keep retrying.
+   - If you get stuck or a step fails, record the failure and move on — do not retry more than once
 Step 4: Call `complete_run` with:
    - run_id: the run ID from step 2
    - status: "passed" if all checks succeeded, "failed" if any check failed, "error" if execution was blocked
-   - result: a brief summary of what happened
+   - result: a brief summary of what happened (include the failure reason if failed/error)
+Step 5: Close the browser tab you created to clean up.
 
 Return a single line summary: {test_name} | {status} | {result_summary}
 ```

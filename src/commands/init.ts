@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -71,14 +72,47 @@ async function validateToken(token: string): Promise<{ valid: boolean; projectCo
   }
 }
 
+function getClaudeConfigPath(): string {
+  return join(homedir(), '.claude.json');
+}
+
+function readClaudeConfig(): Record<string, any> {
+  const configPath = getClaudeConfigPath();
+  if (!existsSync(configPath)) return {};
+  try {
+    return JSON.parse(readFileSync(configPath, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeClaudeConfig(config: Record<string, any>): void {
+  writeFileSync(getClaudeConfigPath(), JSON.stringify(config, null, 2) + '\n');
+}
+
+function setLocalMcpServer(name: string, server: Record<string, unknown>): void {
+  const config = readClaudeConfig();
+  const projectPath = process.cwd();
+
+  config.projects = config.projects || {};
+  config.projects[projectPath] = config.projects[projectPath] || {};
+  config.projects[projectPath].mcpServers = config.projects[projectPath].mcpServers || {};
+  config.projects[projectPath].mcpServers[name] = server;
+
+  writeClaudeConfig(config);
+}
+
 function configureMcpLocal(token: string): void {
   try {
-    execSync(
-      `claude mcp add greenrun --transport stdio -e GREENRUN_API_TOKEN=${token} -- npx -y greenrun-cli@latest`,
-      { stdio: 'inherit' },
-    );
+    setLocalMcpServer('greenrun', {
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', 'greenrun-cli@latest'],
+      env: { GREENRUN_API_TOKEN: token },
+    });
+    console.log('  Configured greenrun MCP server');
   } catch {
-    console.error('\nFailed to run "claude mcp add". Make sure Claude Code is installed and in your PATH.');
+    console.error('\nFailed to write greenrun MCP config to ~/.claude.json');
     console.error('You can add the MCP server manually by running:\n');
     console.error(`  claude mcp add greenrun --transport stdio -e GREENRUN_API_TOKEN=${token} -- npx -y greenrun-cli@latest\n`);
   }
@@ -86,12 +120,20 @@ function configureMcpLocal(token: string): void {
 
 function configurePlaywrightMcp(): void {
   try {
-    execSync(
-      'claude mcp add playwright -- npx @playwright/mcp@latest --browser chrome --user-data-dir ~/.greenrun/browser-profile',
-      { stdio: 'inherit' },
-    );
+    setLocalMcpServer('playwright', {
+      type: 'stdio',
+      command: 'npx',
+      args: [
+        '@playwright/mcp@latest',
+        '--browser', 'chrome',
+        '--user-data-dir', join(homedir(), '.greenrun', 'browser-profile'),
+      ],
+      env: {},
+    });
+    console.log('  Configured playwright MCP server');
   } catch {
-    console.error('\nFailed to add Playwright MCP. You can add it manually:\n');
+    console.error('\nFailed to write Playwright MCP config to ~/.claude.json');
+    console.error('You can add it manually:\n');
     console.error('  claude mcp add playwright -- npx @playwright/mcp@latest --browser chrome --user-data-dir ~/.greenrun/browser-profile\n');
   }
 }
@@ -130,7 +172,9 @@ function configureMcpProject(token: string): void {
       appendFileSync(envPath, `\n${envLine}\n`);
       console.log('  Added GREENRUN_API_TOKEN to .env');
     } else {
-      console.log('  GREENRUN_API_TOKEN already in .env (not modified)');
+      const updated = envContent.replace(/GREENRUN_API_TOKEN=.*/g, envLine);
+      writeFileSync(envPath, updated);
+      console.log('  Updated GREENRUN_API_TOKEN in .env');
     }
   } else {
     writeFileSync(envPath, `${envLine}\n`);

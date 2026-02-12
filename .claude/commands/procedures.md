@@ -8,11 +8,22 @@ Before executing tests, handle authentication based on the project's `auth_mode`
 - **`existing_user`**: Navigate to the project's `login_url` and follow the `login_instructions` step by step. Use `browser_snapshot` after to verify the page shows an authenticated state (no login form visible).
 - **`new_user`**: Navigate to the project's `register_url` and follow the `register_instructions` step by step. Use `browser_snapshot` after to verify registration succeeded and the user is authenticated.
 
+### Credentials
+
+The project may include a `credentials` array — named credential sets with `name`, `email`, and `password`. Each test may have a `credential_name` field referencing one of these sets.
+
+When authenticating for a test with `credential_name`:
+- Find the matching credential in `project.credentials` by name
+- Use that credential's email and password to fill the login form at `login_url`
+- If no `credential_name` is set on a test, use the first credential in the array (or fall back to `login_instructions`)
+
+When authenticating once for a batch (Step 1 below), use the credential that appears most frequently across the batch's tests. If tests use different credentials, re-authenticate between tests as needed.
+
 If auth fails (login form still visible after following instructions), report all tests as error with "Authentication failed" and stop.
 
 ## Execute
 
-You have a batch result from `prepare_test_batch` containing `project` and `tests[]` (each with `test_id`, `test_name`, `run_id`, `instructions`, `pages`, `tags`, `script`, `script_generated_at`).
+You have a batch result from `prepare_test_batch` containing `project` (with `credentials` array) and `tests[]` (each with `test_id`, `test_name`, `run_id`, `instructions`, `credential_name`, `pages`, `tags`, `script`, `script_generated_at`).
 
 If `tests` is empty, tell the user no matching active tests were found and stop.
 
@@ -54,6 +65,8 @@ Then generate a `.spec.ts` script using the observed elements:
 ```ts
 import { test, expect } from '@playwright/test';
 test('{test_name}', async ({ page }) => {
+  // If the test has a credential_name, include login steps using the matching
+  // credential from project.credentials (email + password) at the login_url
   await page.goto('{start_url}');
   // Steps generated from scouting pass observations
   // Use getByRole, getByText, getByLabel, getByPlaceholder for selectors

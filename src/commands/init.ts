@@ -43,7 +43,7 @@ function prompt(rl: ReadlineInterface, question: string): Promise<string> {
   });
 }
 
-function checkPrerequisites(): { claude: boolean; chromeHint: boolean } {
+function checkPrerequisites(): { claude: boolean } {
   let claude = false;
   try {
     execSync('claude --version', { stdio: 'pipe' });
@@ -51,7 +51,7 @@ function checkPrerequisites(): { claude: boolean; chromeHint: boolean } {
   } catch {
     // not installed
   }
-  return { claude, chromeHint: true };
+  return { claude };
 }
 
 async function validateToken(token: string): Promise<{ valid: boolean; projectCount?: number }> {
@@ -81,6 +81,18 @@ function configureMcpLocal(token: string): void {
     console.error('\nFailed to run "claude mcp add". Make sure Claude Code is installed and in your PATH.');
     console.error('You can add the MCP server manually by running:\n');
     console.error(`  claude mcp add greenrun --transport stdio -e GREENRUN_API_TOKEN=${token} -- npx -y greenrun-cli@latest\n`);
+  }
+}
+
+function configurePlaywrightMcp(): void {
+  try {
+    execSync(
+      'claude mcp add playwright -- npx @playwright/mcp@latest --browser chrome --user-data-dir ~/.greenrun/browser-profile',
+      { stdio: 'inherit' },
+    );
+  } catch {
+    console.error('\nFailed to add Playwright MCP. You can add it manually:\n');
+    console.error('  claude mcp add playwright -- npx @playwright/mcp@latest --browser chrome --user-data-dir ~/.greenrun/browser-profile\n');
   }
 }
 
@@ -138,7 +150,9 @@ function installClaudeMd(): void {
   if (existsSync(claudeMdPath)) {
     const existing = readFileSync(claudeMdPath, 'utf-8');
     if (existing.includes('## Greenrun')) {
-      console.log('  CLAUDE.md already contains Greenrun section, skipping');
+      const updated = existing.replace(/## Greenrun[\s\S]*$/, snippet.trimEnd());
+      writeFileSync(claudeMdPath, updated.endsWith('\n') ? updated : updated + '\n');
+      console.log('  Replaced Greenrun section in CLAUDE.md');
       return;
     }
     appendFileSync(claudeMdPath, '\n' + snippet);
@@ -149,11 +163,83 @@ function installClaudeMd(): void {
   }
 }
 
+function installSettings(): void {
+  const settingsDir = join(process.cwd(), '.claude');
+  mkdirSync(settingsDir, { recursive: true });
+  const settingsPath = join(settingsDir, 'settings.local.json');
+
+  let existing: any = {};
+  if (existsSync(settingsPath)) {
+    try {
+      existing = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    } catch {
+      // overwrite invalid JSON
+    }
+  }
+
+  const greenrunTools = [
+    'mcp__greenrun__list_projects',
+    'mcp__greenrun__get_project',
+    'mcp__greenrun__create_project',
+    'mcp__greenrun__update_project',
+    'mcp__greenrun__list_pages',
+    'mcp__greenrun__create_page',
+    'mcp__greenrun__list_tests',
+    'mcp__greenrun__get_test',
+    'mcp__greenrun__create_test',
+    'mcp__greenrun__update_test',
+    'mcp__greenrun__start_run',
+    'mcp__greenrun__complete_run',
+    'mcp__greenrun__get_run',
+    'mcp__greenrun__list_runs',
+    'mcp__greenrun__sweep',
+    'mcp__greenrun__prepare_test_batch',
+  ];
+
+  const browserTools = [
+    'mcp__playwright__browser_navigate',
+    'mcp__playwright__browser_snapshot',
+    'mcp__playwright__browser_click',
+    'mcp__playwright__browser_type',
+    'mcp__playwright__browser_handle_dialog',
+    'mcp__playwright__browser_tab_list',
+    'mcp__playwright__browser_tab_new',
+    'mcp__playwright__browser_tab_select',
+    'mcp__playwright__browser_tab_close',
+    'mcp__playwright__browser_select_option',
+    'mcp__playwright__browser_hover',
+    'mcp__playwright__browser_drag',
+    'mcp__playwright__browser_press_key',
+    'mcp__playwright__browser_screenshot',
+    'mcp__playwright__browser_wait',
+    'mcp__playwright__browser_file_upload',
+    'mcp__playwright__browser_pdf_save',
+    'mcp__playwright__browser_close',
+    'mcp__playwright__browser_console_messages',
+    'mcp__playwright__browser_resize',
+    'mcp__playwright__browser_run_code',
+    'mcp__playwright__browser_evaluate',
+    'mcp__playwright__browser_fill_form',
+    'mcp__playwright__browser_tabs',
+    'mcp__playwright__browser_network_requests',
+  ];
+
+  const requiredTools = [...greenrunTools, ...browserTools];
+
+  existing.permissions = existing.permissions || {};
+  const currentAllow: string[] = existing.permissions.allow || [];
+  const merged = [...new Set([...currentAllow, ...requiredTools])];
+  existing.permissions.allow = merged;
+
+  writeFileSync(settingsPath, JSON.stringify(existing, null, 2) + '\n');
+  console.log('  Updated .claude/settings.local.json with tool permissions');
+}
+
 function installCommands(): void {
   const commandsDir = join(process.cwd(), '.claude', 'commands');
   mkdirSync(commandsDir, { recursive: true });
 
-  const commands = ['greenrun.md', 'greenrun-sweep.md'];
+  const commands = ['greenrun.md', 'greenrun-sweep.md', 'procedures.md'];
   for (const cmd of commands) {
     const src = join(TEMPLATES_DIR, 'commands', cmd);
     if (!existsSync(src)) {
@@ -169,6 +255,7 @@ function installCommands(): void {
 export function runUpdate(): void {
   console.log('\nGreenrun - Updating templates\n');
   installCommands();
+  installSettings();
   installClaudeMd();
   console.log('\nDone! Templates updated to latest version.\n');
 }
@@ -192,8 +279,7 @@ export async function runInit(args: string[]): Promise<void> {
       process.exit(1);
     }
   }
-  console.log('  [i] Claude in Chrome extension required for browser test execution');
-  console.log('      Get it at: https://chromewebstore.google.com/detail/claude-in-chrome\n');
+  console.log('  [i] Playwright MCP will be configured for browser test execution\n');
 
   let token = opts.token;
   let scope = opts.scope;
@@ -256,13 +342,14 @@ export async function runInit(args: string[]): Promise<void> {
   }
 
   // Configure MCP
-  console.log('Configuring MCP server...');
+  console.log('Configuring MCP servers...');
   if (scope === 'project') {
     configureMcpProject(token!);
   } else {
     configureMcpLocal(token!);
   }
-  console.log('  MCP server configured.\n');
+  configurePlaywrightMcp();
+  console.log('  MCP servers configured.\n');
 
   // Install extras
   if (opts.claudeMd) {
@@ -271,11 +358,12 @@ export async function runInit(args: string[]): Promise<void> {
   if (opts.commands) {
     installCommands();
   }
+  installSettings();
 
   console.log(`
 Done! Restart Claude Code to connect.
 
-Make sure Chrome is open with the Claude in Chrome extension active
-before running /greenrun - Claude needs browser access to execute tests.
+Playwright will launch a Chrome browser automatically when running tests.
+Run /greenrun to execute your test suite.
 `);
 }

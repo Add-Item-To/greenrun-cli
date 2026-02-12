@@ -36,7 +36,16 @@ export async function startServer(): Promise<void> {
       name: z.string().describe('Project name'),
       base_url: z.string().optional().describe('Base URL of the site (e.g. https://myapp.com)'),
       description: z.string().optional().describe('Project description'),
-      concurrency: z.number().int().min(1).max(20).optional().describe('Number of tests to run in parallel (default: 5)'),
+      auth_mode: z.enum(['none', 'existing_user', 'new_user']).optional().describe('How to authenticate before tests (default: none)'),
+      login_url: z.string().optional().describe('URL of login page (for existing_user auth mode)'),
+      register_url: z.string().optional().describe('URL of registration page (for new_user auth mode)'),
+      login_instructions: z.string().optional().describe('Steps to log in with existing credentials'),
+      register_instructions: z.string().optional().describe('Steps to register a new user'),
+      credentials: z.array(z.object({
+        name: z.string().describe('Credential set name (e.g. "admin", "viewer")'),
+        email: z.string().describe('Login email'),
+        password: z.string().describe('Login password'),
+      })).optional().describe('Named credential sets for test authentication (max 20)'),
     },
     async (args) => {
       const result = await api.createProject(args);
@@ -50,6 +59,32 @@ export async function startServer(): Promise<void> {
     { project_id: z.string().describe('Project UUID') },
     async (args) => {
       const result = await api.getProject(args.project_id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'update_project',
+    'Update project settings',
+    {
+      project_id: z.string().describe('Project UUID'),
+      name: z.string().optional().describe('Updated project name'),
+      base_url: z.string().optional().describe('Updated base URL'),
+      description: z.string().optional().describe('Updated description'),
+      auth_mode: z.enum(['none', 'existing_user', 'new_user']).optional().describe('How to authenticate before tests'),
+      login_url: z.string().optional().describe('URL of login page (for existing_user auth mode)'),
+      register_url: z.string().optional().describe('URL of registration page (for new_user auth mode)'),
+      login_instructions: z.string().optional().describe('Steps to log in with existing credentials'),
+      register_instructions: z.string().optional().describe('Steps to register a new user'),
+      credentials: z.array(z.object({
+        name: z.string().describe('Credential set name (e.g. "admin", "viewer")'),
+        email: z.string().describe('Login email'),
+        password: z.string().describe('Login password'),
+      })).optional().describe('Named credential sets for test authentication (max 20)'),
+    },
+    async (args) => {
+      const { project_id, ...data } = args;
+      const result = await api.updateProject(project_id, data);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
@@ -112,6 +147,7 @@ export async function startServer(): Promise<void> {
       page_ids: z.array(z.string()).optional().describe('UUIDs of pages this test covers'),
       status: z.enum(['draft', 'active', 'archived']).optional().describe('Test status (default: active)'),
       tags: z.array(z.string()).optional().describe('Tag names for organizing tests (e.g. ["smoke", "auth"])'),
+      credential_name: z.string().optional().describe('Name of a credential set from the project to use for authentication'),
     },
     async (args) => {
       const result = await api.createTest(args.project_id, {
@@ -120,6 +156,7 @@ export async function startServer(): Promise<void> {
         page_ids: args.page_ids,
         status: args.status,
         tags: args.tags,
+        credential_name: args.credential_name,
       });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
@@ -135,6 +172,9 @@ export async function startServer(): Promise<void> {
       page_ids: z.array(z.string()).optional().describe('Updated page UUIDs (replaces existing)'),
       status: z.enum(['draft', 'active', 'archived']).optional().describe('Updated status'),
       tags: z.array(z.string()).optional().describe('Updated tag names (replaces existing tags)'),
+      credential_name: z.string().optional().nullable().describe('Name of a credential set from the project to use for authentication'),
+      script: z.string().optional().nullable().describe('Generated Playwright test script'),
+      script_generated_at: z.string().optional().nullable().describe('ISO timestamp when the script was generated'),
     },
     async (args) => {
       const { test_id, ...data } = args;
@@ -159,6 +199,26 @@ export async function startServer(): Promise<void> {
         url_pattern: args.url_pattern,
       });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  );
+
+  // --- Batch ---
+
+  server.tool(
+    'prepare_test_batch',
+    'Prepare a batch of tests for execution: lists tests, filters, fetches full details, and starts runs — all in one call. Returns everything needed to execute tests.',
+    {
+      project_id: z.string().describe('Project UUID'),
+      filter: z.string().optional().describe('Filter: "tag:xxx" for tag, "/path" for page URL, or text for name substring'),
+      test_ids: z.array(z.string()).optional().describe('Specific test UUIDs to run (overrides filter)'),
+    },
+    async (args) => {
+      try {
+        const result = await api.prepareTestBatch(args.project_id, args.filter, args.test_ids);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (error: any) {
+        return { content: [{ type: 'text', text: `Error: ${error.message}` }], isError: true };
+      }
     },
   );
 

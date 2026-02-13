@@ -23,7 +23,9 @@ If auth fails (login form still visible after following instructions), report al
 
 ## Execute
 
-You have a batch result from `prepare_test_batch` containing `project` (with `credentials` array) and `tests[]` (each with `test_id`, `test_name`, `run_id`, `instructions`, `credential_name`, `pages`, `tags`, `script`, `script_generated_at`).
+You have a batch result from `prepare_test_batch` containing `project` (with `credentials` array) and `tests[]` (each with `test_id`, `test_name`, `run_id`, `instructions`, `credential_name`, `pages`, `tags`, `has_script`).
+
+Note: `has_script` is a boolean indicating whether a cached Playwright script exists. To fetch the actual script content, call `get_test(test_id)` — only do this when you need the script (e.g. in Step 5 when writing test files).
 
 If `tests` is empty, tell the user no matching active tests were found and stop.
 
@@ -35,8 +37,8 @@ Run the Authenticate procedure above once, using the standard Playwright tools (
 
 Split the batch into two groups:
 
-- **scripted**: tests where `script` is non-null (cached Playwright scripts ready to run)
-- **unscripted**: tests where `script` is null (need script generation)
+- **scripted**: tests where `has_script` is true (cached Playwright scripts ready to run)
+- **unscripted**: tests where `has_script` is false (need script generation)
 
 If all tests are scripted, skip to Step 4.
 
@@ -59,6 +61,42 @@ For each unscripted test (in difficulty order), do a **scouting pass** — actua
 3. Follow the test instructions step by step using Playwright MCP tools (`browser_click`, `browser_type`, `browser_snapshot` after each action)
 4. Snapshot after each state change to capture: validation errors, success banners, modal dialogs, redirected pages, dynamically loaded content
 5. Collect all observed elements and selectors as context
+
+#### Handling failures during scouting
+
+If a step doesn't work as expected during the scouting pass, investigate before moving on:
+
+1. **Determine the cause**: Is it a test problem (wrong instructions, bad selectors, missing prerequisite) or an application bug (form won't submit, unexpected error, broken functionality)?
+
+2. **If the test is wrong** — fix and retry:
+   - Adjust the instructions to match what the UI actually requires (e.g. a required field the instructions missed, a different button label, an extra confirmation step)
+   - Update the test via `update_test` with corrected instructions
+   - Retry the failing step
+
+3. **If it's an application bug** — work around it and record the bug:
+   - Find a way to make the original test pass by avoiding the broken path (e.g. if a discount code field breaks form submission, leave it blank)
+   - Update the original test instructions if needed to use the working path
+   - Create a **new bug test** that reproduces the specific failure:
+     ```
+     create_test(project_id, {
+       name: "BUG: [description of the failure]",
+       instructions: "[steps that reproduce the bug, ending with the expected vs actual behaviour]",
+       tags: ["bug"],
+       page_ids: [relevant page IDs],
+       credential_name: same as original test
+     })
+     ```
+   - Start a run for the bug test and immediately complete it as failed:
+     ```
+     start_run(bug_test_id) → complete_run(run_id, "failed", "description of what went wrong")
+     ```
+   - Continue scouting the original test with the workaround
+
+This ensures the original test captures the happy path while bugs are tracked as separate failing tests that will show up in future runs.
+
+After each test's scouting pass, close the browser so the next test starts with a clean context (no leftover cookies, storage, or page state):
+
+Call `browser_close` after collecting all observations. The next `browser_navigate` call will automatically open a fresh browser context.
 
 Then generate a `.spec.ts` script using the observed elements:
 
@@ -108,7 +146,7 @@ Call this via `browser_run_code`. If `auth_mode` is `none`, skip this step.
 
 Gather all tests that have scripts (previously scripted + newly generated from Step 3).
 
-1. **Write test files**: For each scripted test, write the script to `/tmp/greenrun-tests/{test_id}.spec.ts`
+1. **Fetch and write test files**: For each scripted test, call `get_test(test_id)` to retrieve the full script content, then write it to `/tmp/greenrun-tests/{test_id}.spec.ts`. Fetch scripts in parallel to minimize latency.
 
 2. **Write config**: Write `/tmp/greenrun-tests/playwright.config.ts`:
 
@@ -137,6 +175,12 @@ npx playwright test --config /tmp/greenrun-tests/playwright.config.ts
 
 5. **Report results**: Call `complete_run(run_id, status, result_summary)` for each test. Map Playwright statuses: `passed` → `passed`, `failed`/`timedOut` → `failed`, other → `error`.
 
+6. **Clean up browsers**: After native execution completes, close any browsers left behind by the test runner:
+```bash
+npx playwright test --config /tmp/greenrun-tests/playwright.config.ts --list 2>/dev/null; true
+```
+The Playwright Test runner normally cleans up after itself, but if tests crash or timeout, browser processes may linger. Also call `browser_close` to reset the MCP browser context before any subsequent AI fallback execution.
+
 ### Step 6: Handle unscripted tests without scripts
 
 Any tests that still don't have scripts (e.g. because the background agent hasn't finished, or script generation failed) need to be executed via AI agents using the legacy approach. Follow Step 7 for these tests.
@@ -154,8 +198,10 @@ After parsing all native results, walk through them in completion order. Track c
 
 For tests that **failed** in native execution (and circuit breaker has not tripped):
 
-1. Start new runs via `start_run(test_id)` (the original runs were already completed in Step 5)
-2. Launch background Task agents using the tab-isolation pattern:
+1. Close the current browser context with `browser_close` so the fallback starts fresh
+2. Re-authenticate by navigating to the login page and following the Authenticate procedure
+3. Start new runs via `start_run(test_id)` (the original runs were already completed in Step 5)
+4. Launch background Task agents using the tab-isolation pattern:
 
 Create tabs and launch agents in batches of 20:
 

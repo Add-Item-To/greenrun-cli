@@ -63,6 +63,18 @@ Don't ask the user for information you can derive from the codebase (base URL, l
 3. Use `create_page` to register the page URL if not already registered
 4. Use `create_test` with the instructions and page IDs
 
+### Bug Detection During Test Creation
+
+When exploring pages to write tests, if something doesn't work as expected:
+
+- **If the test steps are wrong** (wrong field names, missing prerequisite, bad selectors) -- fix the instructions and retry. Always try to make the test work before giving up.
+- **If there's a real application bug** (form won't submit with certain data, unexpected error, broken feature):
+  1. Adjust the original test to work around the bug so it captures the happy path
+  2. Create a **separate bug test** tagged `bug` with steps that reproduce the failure, describing expected vs actual behaviour
+  3. Start a run for the bug test and complete it as `failed` with a summary of what went wrong
+
+This way the main test suite tracks working functionality while bugs are captured as individual failing tests.
+
 ### Impact Analysis
 
 After making code changes, use the `/greenrun-sweep` command or the `sweep` tool to find which tests are affected by the pages you changed. This helps you run only the relevant tests.

@@ -44,6 +44,44 @@ function prompt(rl: ReadlineInterface, question: string): Promise<string> {
   });
 }
 
+function detectSystemChrome(): boolean {
+  const platform = process.platform;
+  if (platform === 'darwin') {
+    return existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+  }
+  if (platform === 'win32') {
+    const dirs = [process.env['PROGRAMFILES'], process.env['PROGRAMFILES(X86)'], process.env['LOCALAPPDATA']];
+    return dirs.some(dir => dir && existsSync(join(dir, 'Google', 'Chrome', 'Application', 'chrome.exe')));
+  }
+  // Linux
+  try {
+    execSync('which google-chrome-stable || which google-chrome || which chromium-browser || which chromium', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function installPlaywrightChromium(): boolean {
+  try {
+    console.log('  Installing @playwright/test (this may take a minute)...');
+    execSync('npm install -g @playwright/test@latest', { stdio: 'inherit' });
+    console.log('  Installing Chromium browser...');
+    execSync('npx playwright install --with-deps chromium', { stdio: 'inherit' });
+    return true;
+  } catch {
+    console.error('  Failed to install Playwright. You can install manually:');
+    console.error('    npm install -g @playwright/test@latest');
+    console.error('    npx playwright install --with-deps chromium\n');
+    return false;
+  }
+}
+
+function checkNodeVersion(): boolean {
+  const match = process.version.match(/^v(\d+)\./);
+  return match ? parseInt(match[1], 10) >= 18 : false;
+}
+
 function checkPrerequisites(): { claude: boolean } {
   let claude = false;
   try {
@@ -55,7 +93,7 @@ function checkPrerequisites(): { claude: boolean } {
   return { claude };
 }
 
-async function validateToken(token: string): Promise<{ valid: boolean; projectCount?: number }> {
+async function validateToken(token: string): Promise<{ valid: boolean; projectCount?: number; error?: string }> {
   try {
     const response = await fetch(`${APP_URL}/api/v1/projects`, {
       headers: {
@@ -63,12 +101,14 @@ async function validateToken(token: string): Promise<{ valid: boolean; projectCo
         'Accept': 'application/json',
       },
     });
-    if (!response.ok) return { valid: false };
+    if (!response.ok) {
+      return { valid: false, error: `API returned HTTP ${response.status}` };
+    }
     const data = await response.json() as any;
     const projects = Array.isArray(data) ? data : (data.data ?? []);
     return { valid: true, projectCount: projects.length };
-  } catch {
-    return { valid: false };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || String(err) };
   }
 }
 
@@ -118,23 +158,23 @@ function configureMcpLocal(token: string): void {
   }
 }
 
-function configurePlaywrightMcp(): void {
+function configurePlaywrightMcp(browser: 'chrome' | 'chromium' = 'chrome'): void {
   try {
     setLocalMcpServer('playwright', {
       type: 'stdio',
       command: 'npx',
       args: [
         '@playwright/mcp@latest',
-        '--browser', 'chrome',
+        '--browser', browser,
         '--user-data-dir', join(homedir(), '.greenrun', 'browser-profile'),
       ],
       env: {},
     });
-    console.log('  Configured playwright MCP server');
+    console.log(`  Configured playwright MCP server (${browser})`);
   } catch {
     console.error('\nFailed to write Playwright MCP config to ~/.claude.json');
     console.error('You can add it manually:\n');
-    console.error('  claude mcp add playwright -- npx @playwright/mcp@latest --browser chrome --user-data-dir ~/.greenrun/browser-profile\n');
+    console.error(`  claude mcp add playwright -- npx @playwright/mcp@latest --browser ${browser} --user-data-dir ~/.greenrun/browser-profile\n`);
   }
 }
 
@@ -310,6 +350,13 @@ export async function runInit(args: string[]): Promise<void> {
 
   console.log('\nGreenrun - Browser Test Management for Claude Code\n');
 
+  // Node version gate
+  if (!checkNodeVersion()) {
+    console.error(`Error: Node.js 18 or later is required (detected ${process.version}).`);
+    console.error('Install a newer version: https://nodejs.org/\n');
+    process.exit(1);
+  }
+
   // Prerequisites
   console.log('Prerequisites:');
   const prereqs = checkPrerequisites();
@@ -345,7 +392,7 @@ export async function runInit(args: string[]): Promise<void> {
     process.stdout.write('  Validating... ');
     const validation = await validateToken(token);
     if (!validation.valid) {
-      console.log('Failed! Invalid token or cannot reach the API.');
+      console.log(`Failed! ${validation.error || 'Invalid token or cannot reach the API.'}`);
       rl.close();
       process.exit(1);
     }
@@ -378,11 +425,35 @@ export async function runInit(args: string[]): Promise<void> {
     process.stdout.write('Validating token... ');
     const validation = await validateToken(token);
     if (!validation.valid) {
-      console.log('Failed!');
+      console.log(`Failed! ${validation.error || 'Invalid token or cannot reach the API.'}`);
       process.exit(1);
     }
     console.log(`Connected! (${validation.projectCount} project${validation.projectCount === 1 ? '' : 's'} found)`);
     scope = scope || 'local';
+  }
+
+  // Detect browser
+  let browser: 'chrome' | 'chromium' = 'chrome';
+  if (!detectSystemChrome()) {
+    if (interactive) {
+      const rl2 = createInterface({ input: process.stdin, output: process.stdout });
+      console.log('Chrome not detected on this system.');
+      const installChoice = await prompt(rl2, '  Install Playwright Chromium? [Y/n]: ');
+      rl2.close();
+      if (installChoice.toLowerCase() !== 'n') {
+        if (installPlaywrightChromium()) {
+          browser = 'chromium';
+        } else {
+          console.log('  Continuing with chrome config. You can install Chrome manually later.\n');
+        }
+      }
+    } else {
+      console.log('Chrome not detected. Installing Playwright Chromium...');
+      if (installPlaywrightChromium()) {
+        browser = 'chromium';
+      }
+    }
+    console.log();
   }
 
   // Configure MCP
@@ -392,7 +463,7 @@ export async function runInit(args: string[]): Promise<void> {
   } else {
     configureMcpLocal(token!);
   }
-  configurePlaywrightMcp();
+  configurePlaywrightMcp(browser);
   console.log('  MCP servers configured.\n');
 
   // Install extras

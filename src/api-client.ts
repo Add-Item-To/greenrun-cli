@@ -180,51 +180,36 @@ export class ApiClient {
       }
     }
 
+    const projectSummary = {
+      id: project.id, name: project.name, base_url: project.base_url,
+      auth_mode: project.auth_mode ?? 'none',
+      login_url: project.login_url ?? null,
+      register_url: project.register_url ?? null,
+      login_instructions: project.login_instructions ?? null,
+      register_instructions: project.register_instructions ?? null,
+      credentials: project.credentials ?? null,
+    };
+
     if (tests.length === 0) {
-      return {
-        project: {
-          id: project.id, name: project.name, base_url: project.base_url,
-          auth_mode: project.auth_mode ?? 'none',
-          login_url: project.login_url ?? null,
-          register_url: project.register_url ?? null,
-          login_instructions: project.login_instructions ?? null,
-          register_instructions: project.register_instructions ?? null,
-          credentials: project.credentials ?? null,
-        },
-        tests: [],
-      };
+      return { project: projectSummary, tests: [] };
     }
 
-    // Fetch full test details in parallel
-    const fullTests = await Promise.all(
-      tests.map((t: any) => this.getTest(t.id) as Promise<{ test: any }>),
-    );
-
-    // Start runs in parallel
+    // Start runs in parallel (listTests already has full details, no need for getTest)
     const runs = await Promise.all(
       tests.map((t: any) => this.startRun(t.id) as Promise<{ run: any }>),
     );
 
     return {
-      project: {
-        id: project.id, name: project.name, base_url: project.base_url,
-        auth_mode: project.auth_mode ?? 'none',
-        login_url: project.login_url ?? null,
-        register_url: project.register_url ?? null,
-        login_instructions: project.login_instructions ?? null,
-        register_instructions: project.register_instructions ?? null,
-        credentials: project.credentials ?? null,
-      },
-      tests: fullTests.map((ft, i) => ({
-        test_id: ft.test.id,
-        test_name: ft.test.name,
+      project: projectSummary,
+      tests: tests.map((t: any, i: number) => ({
+        test_id: t.id,
+        test_name: t.name,
         run_id: runs[i].run.id,
-        instructions: ft.test.instructions,
-        credential_name: ft.test.credential_name ?? null,
-        pages: ft.test.pages || [],
-        tags: ft.test.tags || [],
-        script: ft.test.script ?? null,
-        script_generated_at: ft.test.script_generated_at ?? null,
+        instructions: t.instructions,
+        credential_name: t.credential_name ?? null,
+        pages: (t.pages || []).map((p: any) => ({ id: p.id, url: p.url })),
+        tags: (t.tags || []).map((tg: any) => tg.name || tg),
+        has_script: !!t.script,
       })),
     };
   }

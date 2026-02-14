@@ -77,9 +77,12 @@ Detect which tests are impacted by recent git changes and offer to run them.
 | `create_test` | Create a test (with credential_name, tags, pages) |
 | `update_test` | Update test (auto-invalidates script on content change) |
 | `prepare_test_batch` | Fetch, filter, and start runs for a batch of tests |
+| `export_test_script` | Write a test's cached Playwright script to a local file (keeps scripts out of context) |
+| `export_test_instructions` | Write a test's instructions to a local file (keeps instructions out of context) |
 | `sweep` | Find tests affected by specific pages |
 | `start_run` | Start a test run |
-| `complete_run` | Record test result |
+| `complete_run` | Record a single test result |
+| `batch_complete_runs` | Record results for multiple test runs in one call |
 | `get_run` | Get run details |
 | `list_runs` | List run history |
 

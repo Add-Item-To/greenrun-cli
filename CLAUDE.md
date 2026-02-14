@@ -12,9 +12,11 @@ The Greenrun MCP server provides these tools:
 - **list_projects** / **get_project** / **create_project** - Manage projects (includes auth configuration)
 - **list_pages** / **create_page** - Manage page URLs within a project
 - **list_tests** / **get_test** / **create_test** / **update_test** - Manage test cases
-- **start_run** / **complete_run** / **get_run** / **list_runs** - Execute and track test runs
+- **start_run** / **complete_run** / **batch_complete_runs** / **get_run** / **list_runs** - Execute and track test runs
 - **sweep** - Impact analysis: find tests affected by changed pages
 - **prepare_test_batch** - Batch prepare tests for execution (lists, filters, fetches details, starts runs in one call)
+- **export_test_script** - Write a test's cached Playwright script to a local file (keeps scripts out of context)
+- **export_test_instructions** - Write a test's instructions to a local file (keeps instructions out of context)
 
 ### Running Tests
 

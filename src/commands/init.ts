@@ -107,8 +107,9 @@ async function validateToken(token: string): Promise<{ valid: boolean; projectCo
     const data = await response.json() as any;
     const projects = Array.isArray(data) ? data : (data.data ?? []);
     return { valid: true, projectCount: projects.length };
-  } catch (err: any) {
-    return { valid: false, error: err?.message || String(err) };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { valid: false, error: message };
   }
 }
 
@@ -116,17 +117,27 @@ function getClaudeConfigPath(): string {
   return join(homedir(), '.claude.json');
 }
 
-function readClaudeConfig(): Record<string, any> {
+interface ClaudeConfig {
+  projects?: Record<string, {
+    mcpServers?: Record<string, Record<string, unknown>>;
+    [key: string]: unknown;
+  }>;
+  [key: string]: unknown;
+}
+
+/** Read the Claude Code config from ~/.claude.json. */
+function readClaudeConfig(): ClaudeConfig {
   const configPath = getClaudeConfigPath();
   if (!existsSync(configPath)) return {};
   try {
-    return JSON.parse(readFileSync(configPath, 'utf-8'));
+    return JSON.parse(readFileSync(configPath, 'utf-8')) as ClaudeConfig;
   } catch {
     return {};
   }
 }
 
-function writeClaudeConfig(config: Record<string, any>): void {
+/** Write the Claude Code config to ~/.claude.json. */
+function writeClaudeConfig(config: ClaudeConfig): void {
   writeFileSync(getClaudeConfigPath(), JSON.stringify(config, null, 2) + '\n');
 }
 
@@ -247,20 +258,8 @@ function installClaudeMd(): void {
   }
 }
 
-function installSettings(): void {
-  const settingsDir = join(process.cwd(), '.claude');
-  mkdirSync(settingsDir, { recursive: true });
-  const settingsPath = join(settingsDir, 'settings.local.json');
-
-  let existing: any = {};
-  if (existsSync(settingsPath)) {
-    try {
-      existing = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    } catch {
-      // overwrite invalid JSON
-    }
-  }
-
+/** Build the list of MCP tool permissions needed for Greenrun and Playwright. */
+function buildPermissionsList(): string[] {
   const greenrunTools = [
     'mcp__greenrun__list_projects',
     'mcp__greenrun__get_project',
@@ -274,10 +273,13 @@ function installSettings(): void {
     'mcp__greenrun__update_test',
     'mcp__greenrun__start_run',
     'mcp__greenrun__complete_run',
+    'mcp__greenrun__batch_complete_runs',
     'mcp__greenrun__get_run',
     'mcp__greenrun__list_runs',
     'mcp__greenrun__sweep',
     'mcp__greenrun__prepare_test_batch',
+    'mcp__greenrun__export_test_script',
+    'mcp__greenrun__export_test_instructions',
   ];
 
   const browserTools = [
@@ -286,10 +288,6 @@ function installSettings(): void {
     'mcp__playwright__browser_click',
     'mcp__playwright__browser_type',
     'mcp__playwright__browser_handle_dialog',
-    'mcp__playwright__browser_tab_list',
-    'mcp__playwright__browser_tab_new',
-    'mcp__playwright__browser_tab_select',
-    'mcp__playwright__browser_tab_close',
     'mcp__playwright__browser_select_option',
     'mcp__playwright__browser_hover',
     'mcp__playwright__browser_drag',
@@ -308,12 +306,30 @@ function installSettings(): void {
     'mcp__playwright__browser_network_requests',
   ];
 
-  const requiredTools = [...greenrunTools, ...browserTools];
+  return [...greenrunTools, ...browserTools];
+}
 
-  existing.permissions = existing.permissions || {};
-  const currentAllow: string[] = existing.permissions.allow || [];
+function installSettings(): void {
+  const settingsDir = join(process.cwd(), '.claude');
+  mkdirSync(settingsDir, { recursive: true });
+  const settingsPath = join(settingsDir, 'settings.local.json');
+
+  let existing: Record<string, unknown> = {};
+  if (existsSync(settingsPath)) {
+    try {
+      existing = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    } catch {
+      // overwrite invalid JSON
+    }
+  }
+
+  const requiredTools = buildPermissionsList();
+
+  const permissions = (existing.permissions ?? {}) as Record<string, unknown>;
+  const currentAllow = (permissions.allow ?? []) as string[];
   const merged = [...new Set([...currentAllow, ...requiredTools])];
-  existing.permissions.allow = merged;
+  permissions.allow = merged;
+  existing.permissions = permissions;
 
   writeFileSync(settingsPath, JSON.stringify(existing, null, 2) + '\n');
   console.log('  Updated .claude/settings.local.json with tool permissions');
@@ -336,8 +352,61 @@ function installCommands(): void {
   }
 }
 
+function checkDependencies(): void {
+  console.log('Checking dependencies...');
+  let allGood = true;
+
+  // Node version
+  if (checkNodeVersion()) {
+    console.log(`  [x] Node.js ${process.version}`);
+  } else {
+    console.log(`  [ ] Node.js ${process.version} (18+ required)`);
+    allGood = false;
+  }
+
+  // Claude Code
+  const prereqs = checkPrerequisites();
+  if (prereqs.claude) {
+    console.log('  [x] Claude Code CLI');
+  } else {
+    console.log('  [ ] Claude Code CLI not found');
+    allGood = false;
+  }
+
+  // @playwright/test
+  try {
+    execSync('npx playwright --version', { stdio: 'pipe' });
+    console.log('  [x] @playwright/test');
+  } catch {
+    console.log('  [ ] @playwright/test not installed');
+    console.log('      Run: npm install -g @playwright/test@latest');
+    allGood = false;
+  }
+
+  // Browser (Chrome or Chromium)
+  if (detectSystemChrome()) {
+    console.log('  [x] Chrome detected');
+  } else {
+    try {
+      execSync('npx playwright install --dry-run chromium', { stdio: 'pipe' });
+      console.log('  [x] Playwright Chromium');
+    } catch {
+      console.log('  [ ] No browser detected (Chrome or Playwright Chromium)');
+      console.log('      Run: npx playwright install --with-deps chromium');
+      allGood = false;
+    }
+  }
+
+  if (allGood) {
+    console.log('  All dependencies installed.\n');
+  } else {
+    console.log('\n  Some dependencies are missing. Install them and run again.\n');
+  }
+}
+
 export function runUpdate(): void {
   console.log('\nGreenrun - Updating templates\n');
+  checkDependencies();
   installCommands();
   installSettings();
   installClaudeMd();

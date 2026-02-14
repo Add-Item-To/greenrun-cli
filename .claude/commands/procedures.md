@@ -23,9 +23,9 @@ If auth fails (login form still visible after following instructions), report al
 
 ## Execute
 
-You have a batch result from `prepare_test_batch` containing `project` (with `credentials` array) and `tests[]` (each with `test_id`, `test_name`, `run_id`, `instructions`, `credential_name`, `pages`, `tags`, `has_script`).
+You have a batch result from `prepare_test_batch` containing `project` (with `credentials` array) and `tests[]` (each with `test_id`, `test_name`, `run_id`, `credential_name`, `pages`, `tags`, `has_script`).
 
-Note: `has_script` is a boolean indicating whether a cached Playwright script exists. To fetch the actual script content, call `get_test(test_id)` — only do this when you need the script (e.g. in Step 5 when writing test files).
+Note: The batch does not include `instructions` or `script` content. Use `export_test_instructions(test_id, file_path)` to write instructions to disk — agents read from the file instead of receiving them through MCP context.
 
 If `tests` is empty, tell the user no matching active tests were found and stop.
 
@@ -42,91 +42,66 @@ Split the batch into two groups:
 
 If all tests are scripted, skip to Step 4.
 
-### Step 3: Score and generate scripts (easy-first)
+### Step 3: Generate scripts for unscripted tests
 
-For each **unscripted** test, assign a difficulty score based on the instructions:
+For each **unscripted** test:
 
-- **easy** (1): Single-page tests with simple actions — navigate, check text/headings, verify static content, click a link and check the URL. Typically 1-4 steps, no form submissions, no multi-step flows.
-- **medium** (2): Tests involving form input, button clicks that trigger state changes, checking error/success messages, or verifying a redirect after an action. Typically 3-8 steps.
-- **hard** (3): Multi-page flows, tests requiring specific sequences of actions (e.g. add to cart then checkout), tests with complex assertions (table data, dynamic content), or tests involving file uploads, modals, or dialogs.
-
-Sort unscripted tests by difficulty ascending (easy first). This ensures simple tests get scripts generated quickly so native execution can start sooner.
-
-#### Walk-through script generation
-
-For each unscripted test (in difficulty order), do a **scouting pass** — actually follow the test instructions in the browser to observe all UI states:
-
-1. Navigate to the test's starting page via `browser_navigate`
-2. Take a `browser_snapshot` to see initial elements
-3. Follow the test instructions step by step using Playwright MCP tools (`browser_click`, `browser_type`, `browser_snapshot` after each action)
-4. Snapshot after each state change to capture: validation errors, success banners, modal dialogs, redirected pages, dynamically loaded content
-5. Collect all observed elements and selectors as context
-
-#### Handling failures during scouting
-
-If a step doesn't work as expected during the scouting pass, investigate before moving on:
-
-1. **Determine the cause**: Is it a test problem (wrong instructions, bad selectors, missing prerequisite) or an application bug (form won't submit, unexpected error, broken functionality)?
-
-2. **If the test is wrong** — fix and retry:
-   - Adjust the instructions to match what the UI actually requires (e.g. a required field the instructions missed, a different button label, an extra confirmation step)
-   - Update the test via `update_test` with corrected instructions
-   - Retry the failing step
-
-3. **If it's an application bug** — work around it and record the bug:
-   - Find a way to make the original test pass by avoiding the broken path (e.g. if a discount code field breaks form submission, leave it blank)
-   - Update the original test instructions if needed to use the working path
-   - Create a **new bug test** that reproduces the specific failure:
-     ```
-     create_test(project_id, {
-       name: "BUG: [description of the failure]",
-       instructions: "[steps that reproduce the bug, ending with the expected vs actual behaviour]",
-       tags: ["bug"],
-       page_ids: [relevant page IDs],
-       credential_name: same as original test
-     })
-     ```
-   - Start a run for the bug test and immediately complete it as failed:
-     ```
-     start_run(bug_test_id) → complete_run(run_id, "failed", "description of what went wrong")
-     ```
-   - Continue scouting the original test with the workaround
-
-This ensures the original test captures the happy path while bugs are tracked as separate failing tests that will show up in future runs.
-
-After each test's scouting pass, close the browser so the next test starts with a clean context (no leftover cookies, storage, or page state):
-
-Call `browser_close` after collecting all observations. The next `browser_navigate` call will automatically open a fresh browser context.
-
-Then generate a `.spec.ts` script using the observed elements:
-
-```ts
-import { test, expect } from '@playwright/test';
-test('{test_name}', async ({ page }) => {
-  // If the test has a credential_name, include login steps using the matching
-  // credential from project.credentials (email + password) at the login_url
-  await page.goto('{start_url}');
-  // Steps generated from scouting pass observations
-  // Use getByRole, getByText, getByLabel, getByPlaceholder for selectors
-});
-```
-
-Save via `update_test(test_id, { script: <generated_script>, script_generated_at: <ISO_now> })`.
-
-**Pipeline optimisation**: After finishing all **easy** tests, if there are medium/hard tests remaining, proceed to Step 4 immediately with whatever scripts are ready (scripted + newly generated easy tests). Continue generating medium/hard scripts in parallel by launching a background Task agent for the remaining generation work. When those scripts are ready, they'll be saved to the API for next run.
-
-To launch the background generation agent:
+1. Call `export_test_instructions(test_id, "/tmp/greenrun-tests/{test_id}.instructions.md")` to write instructions to disk
+2. Launch a Task agent sequentially (one at a time, wait for each to complete before starting the next). This keeps browser snapshot data out of the parent context.
 
 ```
 Task tool with:
 - subagent_type: "general-purpose"
-- run_in_background: true
-- max_turns: 50
+- max_turns: 30
 - model: "sonnet"
-- prompt: (include project details, remaining unscripted tests with instructions, and the scouting+generation procedure above)
+- prompt: (see agent prompt below)
 ```
 
-The background agent should: for each remaining test, do the scouting pass, generate the script, and call `update_test` to save it. It does NOT need to call `complete_run` — that happens in the native execution step.
+#### Script generation agent prompt
+
+Include the following in the prompt, substituting the actual values:
+
+```
+Greenrun script generation for test: {test_name}
+Test ID: {test_id}
+Project ID: {project_id}
+
+Project auth: {auth_mode}, login_url: {login_url}
+Credentials: {credential_name} — email: {email}, password: {password}
+
+## Task
+
+1. Read the test instructions from `/tmp/greenrun-tests/{test_id}.instructions.md` (exported before agent launch)
+2. Authenticate: navigate to {login_url} and log in with the credential above using `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`
+3. Do a scouting pass — follow the test instructions step by step in the browser:
+   - Navigate to the test's starting page via `browser_navigate`
+   - Take a `browser_snapshot` to see initial elements
+   - Follow each instruction using Playwright MCP tools (`browser_click`, `browser_type`, `browser_snapshot` after each action)
+   - Snapshot after each state change to capture selectors, validation errors, success banners, modal dialogs, redirected pages
+4. Handle failures:
+   - If a step fails because the test instructions are wrong (wrong field name, missing step, bad selector), fix the instructions and retry. Update the test via `update_test` with corrected instructions.
+   - If a step fails because of an application bug, work around it for the main test and create a new bug test:
+     `create_test({project_id}, { name: "BUG: [description]", instructions: "[repro steps]", tags: ["bug"], page_ids: [...], credential_name: "{credential_name}" })`
+     Then: `start_run(bug_test_id)` → `complete_run(run_id, "failed", "description")`
+5. After scouting, generate a Playwright `.spec.ts` script:
+
+import { test, expect } from '@playwright/test';
+test('{test_name}', async ({ page }) => {
+  // Include login steps using the credential email + password at login_url
+  await page.goto('{start_url}');
+  // Steps from scouting observations
+  // Use getByRole, getByText, getByLabel, getByPlaceholder for selectors
+});
+
+6. Save: `update_test("{test_id}", { script: <generated_script>, script_generated_at: "<ISO_now>" })`
+7. Close browser: `browser_close`
+
+## Return
+
+Return a one-line summary: {test_name} | script generated | or | {test_name} | failed | {reason}
+```
+
+After each agent completes, note the result and proceed to the next unscripted test.
 
 ### Step 4: Export auth state
 
@@ -146,9 +121,16 @@ Call this via `browser_run_code`. If `auth_mode` is `none`, skip this step.
 
 Gather all tests that have scripts (previously scripted + newly generated from Step 3).
 
-1. **Fetch and write test files**: For each scripted test, call `get_test(test_id)` to retrieve the full script content, then write it to `/tmp/greenrun-tests/{test_id}.spec.ts`. Fetch scripts in parallel to minimize latency.
+**0. Clean up** — run `rm -rf /tmp/greenrun-tests` via Bash to clear any stale files from a previous run.
 
-2. **Write config**: Write `/tmp/greenrun-tests/playwright.config.ts`:
+**1. Fetch scripts and write test files** — call `export_test_script` for each scripted test (all calls in parallel). This fetches each script from the API and writes it directly to disk without returning the script content, keeping context clean. Also write the Playwright config directly.
+
+For each scripted test, call in parallel:
+```
+export_test_script(test_id: "{test_id}", file_path: "/tmp/greenrun-tests/{test_id}.spec.ts")
+```
+
+Then write `/tmp/greenrun-tests/playwright.config.ts` directly:
 
 ```ts
 import { defineConfig } from '@playwright/test';
@@ -159,33 +141,26 @@ export default defineConfig({
   reporter: [['json', { outputFile: 'results.json' }]],
   use: {
     baseURL: '{base_url}',
-    storageState: '/tmp/greenrun-auth-state.json',  // omit 'use.storageState' entirely if auth_mode is 'none'
+    // include storageState ONLY if auth_mode is not 'none':
+    storageState: '/tmp/greenrun-auth-state.json',
   },
 });
 ```
 
-Replace `{base_url}` with the project's base_url.
+Wait for all agents to complete before executing.
 
-3. **Execute**: Run via Bash:
+**2. Execute** — run via Bash:
 ```
 npx playwright test --config /tmp/greenrun-tests/playwright.config.ts
 ```
 
-4. **Parse results**: Read `/tmp/greenrun-tests/results.json`. Map each result back to a run ID via the filename: `{test_id}.spec.ts` → test_id → find the matching run_id from the batch.
+**3. Parse results**: Read `/tmp/greenrun-tests/results.json`. Map each result back to a run ID via the filename: `{test_id}.spec.ts` → test_id → find the matching run_id from the batch.
 
-5. **Report results**: Call `complete_run(run_id, status, result_summary)` for each test. Map Playwright statuses: `passed` → `passed`, `failed`/`timedOut` → `failed`, other → `error`.
+**4. Report results**: Call `batch_complete_runs` with all results at once. Map Playwright statuses: `passed` → `passed`, `failed`/`timedOut` → `failed`, other → `error`. Example: `batch_complete_runs({ runs: [{ run_id, status, result }] })`.
 
-6. **Clean up browsers**: After native execution completes, close any browsers left behind by the test runner:
-```bash
-npx playwright test --config /tmp/greenrun-tests/playwright.config.ts --list 2>/dev/null; true
-```
-The Playwright Test runner normally cleans up after itself, but if tests crash or timeout, browser processes may linger. Also call `browser_close` to reset the MCP browser context before any subsequent AI fallback execution.
+**5. Clean up**: Call `browser_close` to reset the MCP browser context.
 
-### Step 6: Handle unscripted tests without scripts
-
-Any tests that still don't have scripts (e.g. because the background agent hasn't finished, or script generation failed) need to be executed via AI agents using the legacy approach. Follow Step 7 for these tests.
-
-### Step 7: Circuit breaker
+### Step 6: Circuit breaker
 
 After parsing all native results, walk through them in completion order. Track consecutive failures:
 
@@ -194,170 +169,55 @@ After parsing all native results, walk through them in completion order. Track c
   - Skip AI fallback for remaining tests
   - The counter resets on any pass
 
-### Step 8: AI-agent fallback for native failures
+### Step 7: AI fallback for native failures
 
-For tests that **failed** in native execution (and circuit breaker has not tripped):
+For tests that **failed** in native execution (and circuit breaker has not tripped), execute them one at a time via Task agents. This keeps snapshot data out of the parent context.
 
-1. Close the current browser context with `browser_close` so the fallback starts fresh
-2. Re-authenticate by navigating to the login page and following the Authenticate procedure
-3. Start new runs via `start_run(test_id)` (the original runs were already completed in Step 5)
-4. Launch background Task agents using the tab-isolation pattern:
+For each failed test:
 
-Create tabs and launch agents in batches of 20:
+1. Call `export_test_instructions(test_id, "/tmp/greenrun-tests/{test_id}.instructions.md")` to write instructions to disk
+2. Launch a Task agent sequentially (wait for each to complete before the next):
 
-#### Create tab
-```js
-async (page) => {
-  const newPage = await page.context().newPage();
-  await newPage.goto(START_URL);
-  return { index: page.context().pages().length - 1, url: newPage.url() };
-}
-```
-
-#### Launch agent
 ```
 Task tool with:
 - subagent_type: "general-purpose"
-- run_in_background: true
 - max_turns: 25
 - model: "sonnet"
-- prompt: (agent prompt below, including the native failure message for diagnosis)
+- prompt: (see agent prompt below)
 ```
 
-#### Agent prompt
+#### AI fallback agent prompt
 
 ```
-Greenrun browser test (AI fallback). Run ID: {run_id}
-Tab index: {INDEX}
+Greenrun AI fallback test. Test: {test_name}
+Test ID: {test_id}
 
-**{test_name}**
+Project auth: {auth_mode}, login_url: {login_url}
+Credentials: {credential_name} — email: {email}, password: {password}
 
-{paste the full test instructions here}
+Native execution failed with: {failure_message}
 
-**Native execution failed with:** {failure_message}
+## Task
 
-Determine if this is a stale script (UI changed) or an actual bug. If the script is stale, the test may still pass when executed manually.
+1. Read the test instructions from `/tmp/greenrun-tests/{test_id}.instructions.md` (exported before agent launch)
+2. Start a new run: `start_run("{test_id}")` — note the run_id
+3. Authenticate: navigate to {login_url} and log in with the credential above
+4. Follow the test instructions step by step using Playwright MCP tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`)
+5. Determine if the native failure was a stale script (UI changed) or an actual application bug
+6. If the test passes manually, invalidate the stale cached script: `update_test("{test_id}", { script: null, script_generated_at: null })`
+7. Call `complete_run(run_id, status, brief_summary)` — ALWAYS call this, even on error
+8. Call `browser_close`
 
-## CRITICAL: Tab isolation
+## Return
 
-You are assigned to tab index {INDEX}. You MUST use ONLY `browser_run_code` for ALL browser interactions. Do NOT use `browser_snapshot`, `browser_click`, `browser_type`, `browser_navigate`, or any other Playwright MCP tools. The only non-browser tool you may call is `complete_run`.
-
-Every `browser_run_code` call must scope to your tab:
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  // ... your action here ...
-}
+Return: {test_name} | {status} | {summary}
 ```
 
-## Auth
-No authentication needed — the main page already authenticated and cookies are shared to your tab.
+After each agent completes, note the result. If the agent fails to call `complete_run`, call it yourself with status "error".
 
-## Interaction patterns
+### Step 8: Handle unscripted tests without scripts
 
-**Navigate:**
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  await p.goto('https://example.com/path');
-  return p.url();
-}
-```
-
-**Read page state (replaces browser_snapshot):**
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  const url = p.url();
-  const title = await p.title();
-  const text = await p.locator('body').innerText();
-  const headings = await p.getByRole('heading').allTextContents();
-  const buttons = await p.getByRole('button').allTextContents();
-  const links = await p.getByRole('link').allTextContents();
-  const textboxes = await p.getByRole('textbox').evaluateAll(els =>
-    els.map(e => ({ name: e.getAttribute('name') || e.getAttribute('aria-label') || e.placeholder, value: e.value }))
-  );
-  return { url, title, headings, buttons, links, textboxes, text: text.substring(0, 2000) };
-}
-```
-
-**Click an element:**
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  await p.getByRole('button', { name: 'Submit' }).click();
-  return p.url();
-}
-```
-
-**Fill a form field:**
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  await p.getByRole('textbox', { name: 'Email' }).fill('test@example.com');
-  return 'filled';
-}
-```
-
-**Handle a dialog:**
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  p.once('dialog', d => d.accept());
-  await p.getByRole('button', { name: 'Delete' }).click();
-  return p.url();
-}
-```
-
-**Check for specific text (verification):**
-```js
-async (page) => {
-  const p = page.context().pages()[INDEX];
-  const visible = await p.getByText('Success').isVisible();
-  return { found: visible };
-}
-```
-
-## Rules
-- ONLY use `browser_run_code` — no other browser tools
-- Always scope to `page.context().pages()[INDEX]`
-- Use Playwright locators: `getByRole`, `getByText`, `getByLabel`, `getByPlaceholder`, `locator`
-- Read page state to find elements before interacting
-- Navigate with absolute URLs via `p.goto(url)` — never click nav links
-
-## FORBIDDEN — never use these:
-- `browser_snapshot`, `browser_click`, `browser_type`, `browser_navigate` — these operate on the MAIN page and will interfere with other tests
-- `browser_wait` — NEVER call this
-- `browser_screenshot` — NEVER use
-
-## Error recovery
-- On ANY failure: retry the failing step ONCE, then skip to Finish.
-
-## Finish (MANDATORY — always reach this step)
-1. If the test passes on manual execution, call `update_test(test_id, { script: null, script_generated_at: null })` to invalidate the stale cached script.
-2. `complete_run(run_id, status, brief_summary)` — ALWAYS call this, even on error.
-3. Return: {test_name} | {status} | {summary}
-```
-
-#### Wait and clean up
-
-Wait for all agents to complete via `TaskOutput`. Then close extra tabs (newest first):
-
-```js
-async (page) => {
-  const pages = page.context().pages();
-  for (let i = pages.length - 1; i >= 1; i--) {
-    await pages[i].close();
-  }
-  return { remainingPages: page.context().pages().length };
-}
-```
-
-Check for orphaned runs (agents that crashed without calling `complete_run`). For any orphaned run IDs, call `complete_run(run_id, "error", "Agent crashed or timed out")`.
-
-### Step 9: Wait for background generation
-
-If a background generation agent was launched in Step 3, check if it has completed via `TaskOutput` with `block: false`. If still running, note this in the summary. The generated scripts will be available on the next run.
+Any tests that didn't get scripts generated in Step 3 (e.g. if script generation failed) need to be executed the same way as Step 7 — launch a Task agent for each one sequentially using the AI fallback agent prompt above (omit the "Native execution failed with" line).
 
 ## Summarize
 
@@ -375,7 +235,5 @@ Mode values:
 Total: "X passed, Y failed, Z errors out of N tests"
 
 If the circuit breaker tripped, note: "Circuit breaker tripped after N consecutive failures. M tests skipped."
-
-If background script generation is still running, note: "Script generation in progress for N tests. Scripts will be cached for next run."
 
 If any tests failed, highlight what went wrong and suggest next steps.

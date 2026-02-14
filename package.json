@@ -1,11 +1,12 @@
 {
   "name": "greenrun-cli",
-  "version": "0.2.8",
+  "version": "0.3.0",
   "description": "CLI and MCP server for Greenrun - browser test management for Claude Code",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
-    "greenrun": "dist/cli.js"
+    "greenrun": "dist/cli.js",
+    "greenrun-cli": "dist/cli.js"
   },
   "files": [
     "dist",

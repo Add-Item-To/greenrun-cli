@@ -53,7 +53,7 @@ For each **unscripted** test:
 Task tool with:
 - subagent_type: "general-purpose"
 - max_turns: 30
-- model: "sonnet"
+- model: "haiku"
 - prompt: (see agent prompt below)
 ```
 
@@ -182,7 +182,7 @@ For each failed test:
 Task tool with:
 - subagent_type: "general-purpose"
 - max_turns: 25
-- model: "sonnet"
+- model: "haiku"
 - prompt: (see agent prompt below)
 ```
 

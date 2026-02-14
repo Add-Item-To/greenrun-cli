@@ -26,8 +26,14 @@ To run tests manually:
 
 1. Use `list_projects` to find the project
 2. Call `prepare_test_batch` with the project ID (and optional filter) to get test details and run IDs
-3. Execute each test's instructions using Playwright browser automation tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`)
-4. Call `complete_run` with the run ID, status (passed/failed/error), and a result summary
+3. For each test, launch a **Task agent** (subagent_type: "general-purpose", model: "haiku") that:
+   - Reads the test instructions via `export_test_instructions`
+   - Executes the test using Playwright browser automation tools
+   - Calls `complete_run` with the run ID, status, and result summary
+   - Returns a one-line summary
+4. Wait for each agent to complete before launching the next
+
+**Why Task agents?** Each test generates significant Playwright snapshot data. Running tests in Task agents keeps this data out of the parent context, preventing context bloat across a test suite.
 
 ### Auth Configuration
 
@@ -60,10 +66,15 @@ Don't ask the user for information you can derive from the codebase (base URL, l
 
 ### Creating Tests
 
-1. Navigate to the page you want to test using Playwright
-2. Write clear, step-by-step test instructions describing what to do and what to verify
-3. Use `create_page` to register the page URL if not already registered
-4. Use `create_test` with the instructions and page IDs
+Use a **Task agent** per test to keep browser snapshot data out of the parent context:
+
+1. Use `create_page` to register the page URL if not already registered
+2. For each test, launch a Task agent (subagent_type: "general-purpose", model: "haiku") that:
+   - Navigates to the page using Playwright
+   - Explores the UI and writes clear, step-by-step test instructions
+   - Calls `create_test` with the instructions and page IDs
+   - Returns a one-line summary
+3. After each agent completes, proceed to the next test
 
 ### Bug Detection During Test Creation
 
